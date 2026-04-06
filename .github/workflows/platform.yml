@@ -1,0 +1,98 @@
+name: Platform CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/*"
+      - "feature/*"
+    paths:
+      - "platform/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "platform/**"
+
+defaults:
+  run:
+    working-directory: platform
+
+jobs:
+  lint-and-typecheck:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: platform/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Lint
+        run: npm run lint
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: platform/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run unit tests
+        run: npm run test:unit -- --passWithNoTests
+
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (no push — validates Dockerfile)
+        uses: docker/build-push-action@v5
+        with:
+          context: platform
+          file: platform/Dockerfile
+          push: false
+          tags: author-platform:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Uncomment and configure to deploy to your target environment:
+  # deploy:
+  #   name: Deploy to Production
+  #   runs-on: ubuntu-latest
+  #   needs: build
+  #   if: github.ref == 'refs/heads/main'
+  #   environment: production
+  #   steps:
+  #     - name: Deploy
+  #       run: echo "Add your deployment steps here"

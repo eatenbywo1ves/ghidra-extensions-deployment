@@ -1,0 +1,187 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────────
+
+enum AuthProvider {
+  AUTH0
+  JWT
+}
+
+enum ContentType {
+  BOOK
+  SHORT_STORY
+  ARTICLE
+  SCRIPT
+  POEM
+  OTHER
+}
+
+enum WorkStatus {
+  UPLOADING
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum LicenseType {
+  ALL_RIGHTS_RESERVED
+  CC_BY
+  CC_BY_SA
+  CC_BY_NC
+  CC_BY_ND
+  CC_BY_NC_SA
+  CC_BY_NC_ND
+  PUBLIC_DOMAIN
+}
+
+enum VisualizationType {
+  COVER_ART
+  CHARACTER_PORTRAIT
+  SCENE_ILLUSTRATION
+  TYPOGRAPHY_PREVIEW
+  READING_FLOW
+}
+
+enum AssetStatus {
+  PENDING
+  GENERATED
+  FAILED
+}
+
+enum PlanTier {
+  FREE
+  PRO
+}
+
+// ── Models ───────────────────────────────────────────────────────────────────
+
+model User {
+  id               String       @id @default(cuid())
+  email            String       @unique
+  name             String?
+  avatarUrl        String?
+  authProvider     AuthProvider @default(AUTH0)
+  externalId       String?      @unique  // Auth0 sub or external JWT subject
+  stripeCustomerId String?      @unique
+  planTier         PlanTier     @default(FREE)
+  planExpiresAt    DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  works       Work[]
+  accessLogs  AccessLog[] @relation("ViewerLogs")
+
+  @@index([email])
+  @@index([externalId])
+}
+
+model Work {
+  id           String      @id @default(cuid())
+  authorId     String
+  title        String
+  genre        String?
+  contentType  ContentType @default(BOOK)
+  description  String?
+  storageKey   String      @unique   // S3 object key for raw content
+  contentHash  String?               // SHA-256 of raw bytes for provenance
+  wordCount    Int?
+  status       WorkStatus  @default(UPLOADING)
+  uploadedAt   DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  author         User             @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  rights         RightsRecord?
+  analysis       AnalysisResult?
+  visualizations Visualization[]
+  accessLogs     AccessLog[]
+
+  @@index([authorId])
+  @@index([status])
+}
+
+model RightsRecord {
+  id                String      @id @default(cuid())
+  workId            String      @unique
+  licenseType       LicenseType @default(ALL_RIGHTS_RESERVED)
+  watermarkEnabled  Boolean     @default(true)
+  watermarkText     String?     // defaults to "© {author} {year}" if null
+  drmEnabled        Boolean     @default(true)
+  allowPublicPreview Boolean    @default(false)
+  previewWordLimit  Int         @default(500)
+  certificateKey    String?     // S3 key for provenance certificate PDF
+  registeredAt      DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  work Work @relation(fields: [workId], references: [id], onDelete: Cascade)
+}
+
+model AnalysisResult {
+  id               String   @id @default(cuid())
+  workId           String   @unique
+  claudeModel      String
+  analysisVersion  Int      @default(1)
+  characters       Json?    // Array of CharacterAnalysis objects
+  scenes           Json?    // Array of SceneAnalysis objects
+  themes           Json?    // Array of strings
+  styleNotes       String?
+  narrativeArc     String?
+  genre            String?
+  genreConfidence  Float?
+  coverArtConcept  String?
+  typographyMood   String?
+  rawResponse      String?  // Full Claude JSON (for debugging/auditing)
+  status           AssetStatus @default(PENDING)
+  errorMessage     String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  work           Work            @relation(fields: [workId], references: [id], onDelete: Cascade)
+  visualizations Visualization[]
+}
+
+model Visualization {
+  id               String            @id @default(cuid())
+  workId           String
+  analysisResultId String?
+  type             VisualizationType
+  prompt           String?           // The image-gen prompt Claude generated
+  storageKey       String?           // S3 key for the generated image
+  status           AssetStatus       @default(PENDING)
+  errorMessage     String?
+  generatedAt      DateTime?
+  createdAt        DateTime          @default(now())
+
+  work     Work            @relation(fields: [workId], references: [id], onDelete: Cascade)
+  analysis AnalysisResult? @relation(fields: [analysisResultId], references: [id])
+
+  @@index([workId, type])
+  @@index([status])
+}
+
+model AccessLog {
+  id                String   @id @default(cuid())
+  workId            String
+  viewerId          String?  // nullable — anonymous viewers have no account
+  viewerIpPrefix    String?  // first 3 octets only (e.g. "192.168.1") — GDPR-safe
+  viewerFingerprint String?  // browser fingerprint hash
+  previewDepth      Int      @default(0)   // percentage of preview content accessed
+  referrer          String?
+  userAgent         String?
+  accessedAt        DateTime @default(now())
+
+  work   Work  @relation(fields: [workId], references: [id], onDelete: Cascade)
+  viewer User? @relation("ViewerLogs", fields: [viewerId], references: [id], onDelete: SetNull)
+
+  @@index([workId])
+  @@index([accessedAt])
+}
